@@ -1,7 +1,7 @@
 """
 models.py
 =========
-AI model definitions for the BattleEdge inspection pipeline.
+AI model definitions for the WeldSense inspection pipeline.
 
 Classes / Functions
 -------------------
@@ -253,7 +253,178 @@ class DefectClassifier:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3.  WARRANTY RISK SCORE  — Step 10
+# 3.  IMAGE DEFECT CLASSIFIER  (visual modality)  — Layer 1
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ImageDefectClassifier:
+    """
+    Multi-class RandomForest classifier that maps visual features extracted
+    from the weld photograph to a defect-type label.
+
+    Training labels are inferred from image filename prefixes:
+        spatter_00.jpg    → "spatter"
+        burn_through_01.jpg → "burn_through"
+        good_weld_00.jpg  → "good_weld"
+
+    This means replacing real images in data/images/ (keeping the same
+    filename prefix) automatically updates the training data.
+    """
+
+    IMAGE_CLASSES = [
+        "good_weld", "burn_through", "contamination",
+        "lack_of_fusion", "spatter", "porosity", "cold_weld"
+    ]
+
+    def __init__(self, n_estimators: int = 200, random_state: int = 42):
+        from sklearn.ensemble import RandomForestClassifier
+        from sklearn.preprocessing import LabelEncoder
+
+        self.clf = RandomForestClassifier(
+            n_estimators=n_estimators,
+            random_state=random_state,
+            max_depth=12,
+            min_samples_leaf=2,
+        )
+        self.le      = LabelEncoder()
+        self._fitted = False
+
+    # ── training ─────────────────────────────────────────────────────────────
+
+    def train(self, images_dir: str = None, verbose: bool = True) -> dict:
+        """
+        Train on all labelled images in images_dir.
+        Labels come from the filename prefix (e.g. 'spatter' from 'spatter_00.jpg').
+
+        Returns accuracy on hold-out test set.
+        """
+        import glob as _glob
+        from sklearn.model_selection import train_test_split
+        from pipeline.sensors import extract_image_features
+
+        images_dir = images_dir or os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "data", "images"
+        )
+
+        X, y_labels = [], []
+        for cls in self.IMAGE_CLASSES:
+            pattern = os.path.join(images_dir, f"{cls}_*.jpg")
+            paths   = sorted(_glob.glob(pattern))
+            if not paths:
+                if verbose:
+                    print(f"  [!] No images found for class '{cls}' — skipping")
+                continue
+            for p in paths:
+                try:
+                    feat = extract_image_features(p)
+                    X.append(feat)
+                    y_labels.append(cls)
+                except Exception as e:
+                    if verbose:
+                        print(f"  [!] Skipping {p}: {e}")
+
+        if len(X) < 4:
+            raise RuntimeError(
+                f"Not enough labelled images found in {images_dir}.\n"
+                "Need at least 4 images with prefix-based names like 'spatter_00.jpg'."
+            )
+
+        X = np.array(X, dtype=np.float32)
+        y = self.le.fit_transform(y_labels)
+
+        if verbose:
+            from collections import Counter
+            counts = Counter(y_labels)
+            print(f"  Training ImageDefectClassifier on {len(X)} images:")
+            for cls, cnt in sorted(counts.items()):
+                print(f"    {cls}: {cnt} images")
+
+        # For small datasets use stratified k-fold CV for evaluation
+        from collections import Counter as _Counter
+        from sklearn.model_selection import StratifiedKFold, cross_val_score
+        counts = _Counter(y_labels)
+        min_class_count = min(counts.values())
+
+        # Train on all data
+        self.clf.fit(X, y)
+        self._fitted = True
+
+        # Evaluate with cross-validation (handles small datasets better)
+        n_splits = min(5, min_class_count)
+        if n_splits >= 2:
+            cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+            cv_scores = cross_val_score(self.clf, X, y, cv=cv)
+            acc = float(cv_scores.mean())
+        else:
+            acc = float(self.clf.score(X, y))  # fallback: training accuracy
+
+        eval_info = {
+            "accuracy":    round(acc, 4),
+            "classes":     [str(c) for c in self.le.classes_],
+            "n_images":    len(X),
+        }
+
+        if verbose:
+            print(f"  → CV Accuracy: {acc:.2%}  |  Classes: {[str(c) for c in self.le.classes_]}")
+
+        return eval_info
+
+    # ── inference ────────────────────────────────────────────────────────────
+
+    def predict(self, image_features: np.ndarray) -> str:
+        """
+        Predict defect type from a 20-d feature vector.
+        Returns a string label e.g. 'spatter'.
+
+        Parameters
+        ----------
+        image_features : np.ndarray  shape (20,)  from sensors.extract_image_features()
+        """
+        if not self._fitted:
+            raise RuntimeError("Model not trained. Call .train() or load from file.")
+        feat = image_features.reshape(1, -1)
+        code = self.clf.predict(feat)[0]
+        return str(self.le.inverse_transform([code])[0])
+
+    def predict_proba(self, image_features: np.ndarray) -> dict:
+        """Return probability dict {class: probability} over all trained classes."""
+        if not self._fitted:
+            raise RuntimeError("Model not trained.")
+        feat  = image_features.reshape(1, -1)
+        probs = self.clf.predict_proba(feat)[0]
+        return {str(cls): round(float(p), 4) for cls, p in zip(self.le.classes_, probs)}
+
+    # ── persistence ──────────────────────────────────────────────────────────
+
+    def save(self, clf_path: str = None, enc_path: str = None):
+        import joblib
+        clf_path = clf_path or os.path.join(MODELS_DIR, "image_classifier.pkl")
+        enc_path = enc_path or os.path.join(MODELS_DIR, "image_label_encoder.pkl")
+        os.makedirs(MODELS_DIR, exist_ok=True)
+        joblib.dump(self.clf, clf_path)
+        joblib.dump(self.le,  enc_path)
+        print(f"  [OK] ImageDefectClassifier saved -> {clf_path}")
+        print(f"  [OK] Image LabelEncoder saved    -> {enc_path}")
+
+    @classmethod
+    def load(cls, clf_path: str = None, enc_path: str = None) -> "ImageDefectClassifier":
+        import joblib
+        clf_path = clf_path or os.path.join(MODELS_DIR, "image_classifier.pkl")
+        enc_path = enc_path or os.path.join(MODELS_DIR, "image_label_encoder.pkl")
+        if not os.path.exists(clf_path):
+            raise FileNotFoundError(
+                f"Image classifier not found: {clf_path}\n"
+                "Run: python pipeline/train.py"
+            )
+        obj = cls.__new__(cls)
+        obj.clf     = joblib.load(clf_path)
+        obj.le      = joblib.load(enc_path)
+        obj._fitted = True
+        return obj
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4.  WARRANTY RISK SCORE  — Step 10
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Severity multiplier for each defect type (0 = safe, 1 = certain failure)

@@ -1,5 +1,5 @@
 """
-run.py — BattleEdge one-click launcher
+run.py — WeldSense one-click launcher
 =======================================
 Run from the project root:
     python run.py
@@ -54,7 +54,7 @@ def models_ready() -> bool:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="BattleEdge launcher")
+    parser = argparse.ArgumentParser(description="WeldSense launcher")
     parser.add_argument("--skip-data",  action="store_true")
     parser.add_argument("--skip-train", action="store_true")
     args = parser.parse_args()
@@ -89,7 +89,7 @@ def main():
 
     # ── Step 3: Launch dashboard ──────────────────────────────────────────────
     print("\n" + "="*55)
-    print("  Launching BattleEdge Dashboard…")
+    print("  Launching WeldSense Dashboard…")
     print("  Open:  http://localhost:8501")
     print("="*55 + "\n")
     subprocess.run(

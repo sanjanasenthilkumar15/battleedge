@@ -1,7 +1,7 @@
 """
 pipeline_core.py
 ================
-Core BattleEdge inspection pipeline — Steps 5-11.
+Core WeldSense inspection pipeline — Steps 5-11.
 
 Public API
 ----------
@@ -23,11 +23,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Lazy-loaded model singletons — avoid reloading on every call
 _anomaly_detector  = None
 _defect_classifier = None
+_image_classifier  = None
 
 
 def _load_models():
     """Load or return cached model objects."""
-    global _anomaly_detector, _defect_classifier
+    global _anomaly_detector, _defect_classifier, _image_classifier
 
     if _anomaly_detector is None or _defect_classifier is None:
         from pipeline.models import AnomalyDetector, DefectClassifier
@@ -45,6 +46,17 @@ def _load_models():
 
         _anomaly_detector  = AnomalyDetector.load(ad_path)
         _defect_classifier = DefectClassifier.load(clf_path, enc_path)
+
+    # Load image classifier if available (optional — graceful fallback)
+    if _image_classifier is None:
+        from pipeline.models import ImageDefectClassifier
+        img_clf_path = os.path.join(ROOT, "models", "image_classifier.pkl")
+        img_enc_path = os.path.join(ROOT, "models", "image_label_encoder.pkl")
+        if os.path.exists(img_clf_path):
+            try:
+                _image_classifier = ImageDefectClassifier.load(img_clf_path, img_enc_path)
+            except Exception:
+                _image_classifier = None  # silently fall back to param-only
 
     return _anomaly_detector, _defect_classifier
 
@@ -81,7 +93,7 @@ def inspect_cell(
     sim_defect:   str   = None,
 ) -> dict:
     """
-    Run the full BattleEdge multi-modal inspection pipeline.
+    Run the full WeldSense multi-modal inspection pipeline.
 
     Parameters
     ----------
@@ -104,7 +116,7 @@ def inspect_cell(
         defect_proba   : dict    {class: probability}
         thermal        : dict    {peak, mean, std}
         risk_score     : int     0-100
-        decision       : "PASS" | "REJECT"
+        decision       : "PASS" | "MONITOR" | "REJECT"
         latency_ms     : int
         image_path     : str
         audio_path     : str
@@ -125,21 +137,72 @@ def inspect_cell(
     # ── Step 3: Anomaly score (acoustic) ────────────────────────────────────
     anomaly_score = anomaly_det.score(spectrogram)
 
-    # ── Step 4: Defect type (weld parameters) ───────────────────────────────
-    # Use supplied parameters; fall back to simulated defaults
+    # ── Step 4a: Visual defect prediction (image-driven — Layer 1) ───────────
+    from pipeline.sensors import extract_image_features
+    try:
+        img_features = extract_image_features(image_path)
+        visual_pred  = _image_classifier.predict(img_features) if _image_classifier else None
+        visual_proba = _image_classifier.predict_proba(img_features) if _image_classifier else {}
+    except Exception:
+        visual_pred  = None
+        visual_proba = {}
+
+    # ── Step 4b: Param-based defect prediction (fallback / secondary) ────────
     if voltage is None or current is None or weld_speed is None:
         hint = (sim_defect or "normal").lower()
         voltage, current, weld_speed = _SIM_PARAMS.get(hint, _SIM_PARAMS["normal"])
 
-    defect_type  = defect_clf.predict(voltage, current, weld_speed)
-    defect_proba = defect_clf.predict_proba(voltage, current, weld_speed)
+    param_pred  = defect_clf.predict(voltage, current, weld_speed)
+    param_proba = defect_clf.predict_proba(voltage, current, weld_speed)
+
+    # ── Step 4c: Fuse visual (65%) + param (35%) predictions ─────────────────
+    # Lower threshold for real images: 7-class visual classifier rarely exceeds
+    # 0.5; use 0.30 so the visual signal is actually utilised.
+    VISUAL_CONFIDENCE_THRESHOLD = 0.30
+
+    if visual_pred is not None:
+        visual_confidence = max(visual_proba.values()) if visual_proba else 0.0
+
+        if visual_confidence >= VISUAL_CONFIDENCE_THRESHOLD:
+            if visual_pred == param_pred:
+                # Both agree — high confidence, use visual proba
+                defect_type  = visual_pred
+                defect_proba = visual_proba
+            else:
+                # Disagree — weighted fusion (65% visual, 35% param)
+                all_classes = set(list(visual_proba.keys()) + list(param_proba.keys()))
+                fused = {}
+                for cls in all_classes:
+                    vp = visual_proba.get(cls, 0.0)
+                    pp = param_proba.get(cls, 0.0)
+                    fused[cls] = round(0.65 * vp + 0.35 * pp, 4)
+                defect_type  = max(fused, key=fused.get)
+                defect_proba = fused
+        else:
+            # Visual not confident enough — use param-only
+            defect_type  = param_pred
+            defect_proba = param_proba
+    else:
+        # No image classifier available — fall back to param-only
+        defect_type  = param_pred
+        defect_proba = param_proba
+
+    # ── Step 4d: Visual risk signal override ───────────────────────────────
+    # Even when the visual label is uncertain, raw features tell us about
+    # visual damage severity. Store them for the risk calculator.
+    _visual_features = img_features if 'img_features' in dir() else None
 
     # ── Step 5: Warranty risk score ──────────────────────────────────────────
     from pipeline.models import calculate_warranty_risk
     risk_score = calculate_warranty_risk(anomaly_score, defect_type, t_feat)
 
-    # ── Step 6: PASS / REJECT decision ──────────────────────────────────────
-    decision = "REJECT" if risk_score >= 65 else "PASS"
+    # ── Step 6: PASS / MONITOR / REJECT decision ──────────────────────────────────────
+    if risk_score <= 40:
+        decision = "PASS"
+    elif risk_score <= 70:
+        decision = "MONITOR"
+    else:
+        decision = "REJECT"
 
     latency_ms = int((time.time() - t0) * 1000)
 
@@ -193,7 +256,12 @@ def batch_inspect(cells: list, save_to_db: bool = True) -> list:
             if save_to_db:
                 save_result(r)
             results.append(r)
-            status = "✓" if r["decision"] == "PASS" else "✗"
+            if r["decision"] == "PASS":
+                status = "✓"
+            elif r["decision"] == "MONITOR":
+                status = "⚠"
+            else:
+                status = "✗"
             print(f"  {status}  {r['cell_id']:10s}  risk={r['risk_score']:3d}  {r['decision']}")
         except Exception as exc:
             print(f"  ✗  {cell.get('cell_id', '?')}  ERROR: {exc}")
@@ -231,7 +299,7 @@ if __name__ == "__main__":
     ]
 
     print("=" * 55)
-    print("  BattleEdge — Pipeline Self-Test")
+    print("  WeldSense — Pipeline Self-Test")
     print("=" * 55)
     results = batch_inspect(test_cases, save_to_db=True)
     for r in results:

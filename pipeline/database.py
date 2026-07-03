@@ -1,7 +1,7 @@
 """
 database.py
 ===========
-SQLite persistence layer for BattleEdge inspection results.
+SQLite persistence layer for WeldSense inspection results.
 
 Functions
 ---------

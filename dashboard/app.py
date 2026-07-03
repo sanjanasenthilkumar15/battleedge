@@ -1,5 +1,5 @@
 """
-app.py — BattleEdge Live Inspection Dashboard
+app.py — WeldSense Live Inspection Dashboard
 =============================================
 Run from the project root:
     streamlit run dashboard/app.py
@@ -29,7 +29,122 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from pipeline.database    import init_db, save_result, load_history, get_summary
-from pipeline.pipeline_core import inspect_cell
+from pipeline.pipeline_core import inspect_cell, _load_models
+
+def apply_theme(theme):
+    if theme == "Dark":
+        bg = "#0d1117"
+        sidebar_bg = "#161b22"
+        text = "#e6edf3"
+        subtext = "#c9d1d9"
+        card_bg = "#1c2128"
+        border = "#30363d"
+    else:
+        bg = "#F8FAFC"
+        sidebar_bg = "#EEF2FF"
+        text = "#000000"
+        subtext = "#000000"
+        card_bg = "#FFFFFF"
+        border = "#E2E8F0"
+
+    st.markdown(f"""
+    <style>
+    /* Page background */
+    .stApp, .stApp > div {{
+        background-color: {bg} !important;
+    }}
+
+    /* Sidebar */
+    [data-testid="stSidebar"] {{
+        background-color: {sidebar_bg} !important;
+        width: 220px !important;
+        min-width: 220px !important;
+    }}
+
+    /* Force sidebar to NEVER collapse */
+    [data-testid="stSidebar"][aria-expanded="false"] {{
+        width: 220px !important;
+        min-width: 220px !important;
+        display: block !important;
+    }}
+    [data-testid="collapsedControl"] {{
+        display: none !important;
+    }}
+
+    /* ALL text everywhere — no exceptions */
+    html, body, p, span, div, label, h1, h2, h3, h4, h5, h6,
+    li, a, td, th, caption, small, strong, em,
+    .stMarkdown, .stMarkdown p, .stMarkdown span,
+    .stTextInput label, .stSelectbox label,
+    .stRadio label, .stCheckbox label,
+    [data-testid="stMetricLabel"],
+    [data-testid="stMetricValue"],
+    [data-testid="stMetricDelta"],
+    [data-testid="stCaptionContainer"],
+    [data-testid="stText"],
+    .stCaption, .stCaption p,
+    [class*="css"] p, [class*="css"] span,
+    [class*="css"] label, [class*="css"] div {{
+        color: {text} !important;
+    }}
+
+    /* Tabs — show text and icons */
+    [data-testid="stTabs"] button {{
+        color: {text} !important;
+        background: transparent !important;
+        opacity: 1 !important;
+    }}
+    [data-testid="stTabs"] button p,
+    [data-testid="stTabs"] button span {{
+        color: {text} !important;
+        opacity: 1 !important;
+    }}
+
+    /* Metric cards */
+    [data-testid="stMetric"] {{
+        background-color: {card_bg} !important;
+        border: 1px solid {border} !important;
+        border-radius: 8px !important;
+        padding: 12px !important;
+    }}
+
+    /* Subtitle line under header */
+    .stMarkdown p:first-child {{
+        color: {subtext} !important;
+        font-weight: 500 !important;
+    }}
+
+    /* Dataframe / table */
+    [data-testid="stDataFrame"] td,
+    [data-testid="stDataFrame"] th,
+    .dataframe td, .dataframe th {{
+        color: {text} !important;
+        background-color: {card_bg} !important;
+    }}
+
+    /* Expander */
+    [data-testid="stExpander"] summary,
+    [data-testid="stExpander"] summary span {{
+        color: {text} !important;
+    }}
+    [data-testid="stExpander"] > div {{
+        background-color: {card_bg} !important;
+    }}
+
+    /* Input boxes */
+    .stTextInput input, .stSelectbox select,
+    [data-testid="stTextInput"] input {{
+        color: {text} !important;
+        background-color: {card_bg} !important;
+        border-color: {border} !important;
+    }}
+
+    /* Section header caps */
+    .stMarkdown p[style*="uppercase"],
+    small {{ color: {subtext} !important; }}
+
+    </style>
+    """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Data paths
@@ -64,99 +179,27 @@ def _pick_file(directory: str, prefix: str, ext: str) -> str | None:
 # Page config
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="BattleEdge — EV Weld Inspection",
+    page_title="WeldSense — EV Weld Inspection",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# ── Global CSS ────────────────────────────────────────────────────────────────
-st.markdown("""
-<style>
-/* Font */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
-
-/* Background */
-.stApp { background: linear-gradient(135deg, #0d0d1a 0%, #131329 60%, #0f1a2e 100%); }
-
-/* Sidebar */
-section[data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #111128 0%, #0a0a1f 100%);
-    border-right: 1px solid #2a2a50;
-}
-
-/* Cards */
-.metric-card {
-    background: rgba(255,255,255,0.04);
-    border: 1px solid rgba(255,255,255,0.08);
-    border-radius: 14px;
-    padding: 1.2rem 1.4rem;
-    margin-bottom: 0.6rem;
-}
-
-/* Decision banners */
-.banner-pass {
-    background: linear-gradient(90deg, #0a2a1a, #0d3a22);
-    border: 1px solid #1a6b3a;
-    border-left: 5px solid #22c55e;
-    border-radius: 10px;
-    padding: 1rem 1.5rem;
-    color: #22c55e;
-    font-size: 1.4rem;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-}
-.banner-reject {
-    background: linear-gradient(90deg, #2a0a0a, #3a0d0d);
-    border: 1px solid #6b1a1a;
-    border-left: 5px solid #ef4444;
-    border-radius: 10px;
-    padding: 1rem 1.5rem;
-    color: #ef4444;
-    font-size: 1.4rem;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-}
-
-/* Section heading */
-.section-title {
-    color: #a0a8c8;
-    font-size: 0.75rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.12em;
-    margin: 1.5rem 0 0.5rem 0;
-}
-
-/* Stat grid */
-.stat-value { font-size: 2rem; font-weight: 700; color: #e2e8f0; }
-.stat-label { font-size: 0.78rem; color: #7080a0; margin-top: 0.1rem; }
-
-/* Table header colour override */
-th { color: #a0b0d0 !important; }
-
-/* Risk colours */
-.risk-low    { color: #22c55e; }
-.risk-medium { color: #f59e0b; }
-.risk-high   { color: #ef4444; }
-
-/* Pulse animation for REJECT banner */
-@keyframes pulse-red { 0%,100%{opacity:1} 50%{opacity:0.7} }
-.banner-reject { animation: pulse-red 2s ease-in-out infinite; }
-</style>
-""", unsafe_allow_html=True)
-
 # ─────────────────────────────────────────────────────────────────────────────
-# Init DB on first run
+# Init DB & Warmup Models
 # ─────────────────────────────────────────────────────────────────────────────
 init_db()
+# Warm up models on app start to avoid latency spike on first run
+_load_models()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Sidebar — controls
 # ─────────────────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown("## ⚡ BattleEdge")
+    theme = st.radio("🎨 Theme", ["Light", "Dark"], horizontal=True)
+    apply_theme(theme)
+
+    st.markdown("## ⚡ WeldSense")
     st.markdown("*EV Battery Cell Weld Inspector*")
     st.divider()
 
@@ -193,8 +236,7 @@ with st.sidebar:
         st.rerun()
 
     st.divider()
-    st.caption("BattleEdge v1.0 · Digital Simulation")
-    st.caption("Tata Motors Nexon EV — prototype demo")
+    st.caption("Built for Tata Technologies InnoVent 2026–27")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -202,14 +244,12 @@ with st.sidebar:
 # ─────────────────────────────────────────────────────────────────────────────
 st.markdown("""
 <h1 style='
-    background: linear-gradient(90deg, #60a5fa, #a78bfa, #f472b6);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
+    color: #1A56DB;
     font-size: 2.2rem;
     font-weight: 800;
     margin-bottom: 0.1rem;
-'>⚡ BattleEdge — AI Weld Inspection</h1>
-<p style='color:#7080a0; font-size:0.9rem; margin-top:0;'>
+'>⚡ WeldSense — AI Weld Inspection</h1>
+<p style='color:#000000; font-size:0.9rem; margin-top:0;'>
   Edge-AI warranty risk scoring · Tata Motors Nexon EV production line
 </p>
 """, unsafe_allow_html=True)
@@ -228,7 +268,19 @@ with tab_inspect:
     if run_btn:
         img_prefix, th_prefix, aud_type = DEFECT_MAP[sim_defect]
 
-        image_file   = _pick_file(IMG_DIR,     img_prefix, "jpg")
+        def_type = sim_defect.replace('_', ' ').title()
+        weld_images = {
+            "Good Weld": os.path.join(IMG_DIR, "good_weld_00.jpg"),
+            "Burn Through": os.path.join(IMG_DIR, "burn_through_00.jpg"),
+            "Lack Of Fusion": os.path.join(IMG_DIR, "lack_of_fusion_00.jpg"),
+            "Porosity": os.path.join(IMG_DIR, "porosity_00.jpg"),
+            "Spatter": os.path.join(IMG_DIR, "spatter_00.jpg"),
+            "Contamination": os.path.join(IMG_DIR, "contamination_00.jpg"),
+            "Cold Weld": os.path.join(IMG_DIR, "good_weld_00.jpg"),
+            "Misalignment": os.path.join(IMG_DIR, "good_weld_00.jpg")
+        }
+        image_file   = weld_images.get(def_type, weld_images["Good Weld"])
+        
         thermal_file = _pick_file(THERMAL_DIR, th_prefix,  "png")
         audio_file   = _pick_file(AUDIO_DIR,   aud_type,   "wav")
 
@@ -252,7 +304,7 @@ with tab_inspect:
         if use_custom:
             kwargs.update(voltage=voltage, current=current, weld_speed=weld_speed)
 
-        with st.spinner("Running BattleEdge multi-sensor pipeline…"):
+        with st.spinner("Running WeldSense multi-sensor pipeline…"):
             try:
                 result = inspect_cell(**kwargs)
             except FileNotFoundError as e:
@@ -262,55 +314,48 @@ with tab_inspect:
 
         save_result(result)
 
-        # ── Decision banner ───────────────────────────────────────────────────
+        # ── Row 1: Decision banner ────────────────────────────────────────────
         decision = result["decision"]
-        icon     = "✅ PASS" if decision == "PASS" else "❌ REJECT"
-        css_cls  = "banner-pass" if decision == "PASS" else "banner-reject"
-        st.markdown(
-            f'<div class="{css_cls}">{icon} — Cell {result["cell_id"]}</div>',
-            unsafe_allow_html=True,
-        )
-        st.markdown("")
+        if decision == "PASS":
+            st.success(f"✅ PASS — Cell {result['cell_id']} — Low Risk")
+        elif decision == "MONITOR":
+            st.warning(f"⚠️ MONITOR — Cell {result['cell_id']} — Moderate Risk")
+        else:
+            st.error(f"❌ REJECT — Cell {result['cell_id']} — High Warranty Risk")
 
-        # ── Step 15: Risk Gauge ───────────────────────────────────────────────
+        # ── Row 2: Risk Gauge ─────────────────────────────────────────────────
         score = result["risk_score"]
 
         def risk_gauge(score: int):
-            color = "#22c55e" if score < 40 else ("#f59e0b" if score < 65 else "#ef4444")
+            color = "#16A34A" if score <= 40 else ("#D97706" if score <= 70 else "#DC2626")
             fig = go.Figure(go.Indicator(
-                mode="gauge+number+delta",
+                mode="gauge+number",
                 value=score,
-                title={"text": "Warranty Risk Score", "font": {"color": "#a0b0d0", "size": 14}},
-                number={"font": {"color": color, "size": 42}},
-                delta={
-                    "reference": 65,
-                    "increasing": {"color": "#ef4444"},
-                    "decreasing": {"color": "#22c55e"},
-                    "font": {"size": 14},
-                },
+                title={"text": "Warranty Risk Score", "font": {"color": "#000000", "size": 14}},
+                number={"font": {"color": color, "size": 48}},
                 gauge={
                     "axis": {
                         "range": [0, 100],
-                        "tickcolor": "#4a5568",
-                        "tickfont": {"color": "#7080a0", "size": 11},
+                        "tickcolor": "#E2E8F0",
+                        "tickfont": {"color": "#000000", "size": 11},
                     },
                     "bar":  {"color": color, "thickness": 0.25},
                     "bgcolor": "rgba(0,0,0,0)",
                     "borderwidth": 0,
                     "steps": [
-                        {"range": [0,  40], "color": "rgba(34,197,94,0.10)"},
-                        {"range": [40, 65], "color": "rgba(245,158,11,0.10)"},
-                        {"range": [65,100], "color": "rgba(239,68,68,0.12)"},
+                        {"range": [0,  40], "color": "rgba(22,163,74,0.10)"},
+                        {"range": [40, 70], "color": "rgba(217,119,6,0.10)"},
+                        {"range": [70,100], "color": "rgba(220,38,38,0.12)"},
                     ],
                     "threshold": {
-                        "line": {"color": "#ef4444", "width": 3},
+                        "line": {"color": "#DC2626", "width": 3},
                         "thickness": 0.85,
-                        "value": 65,
+                        "value": 70,
                     },
                 },
             ))
             fig.update_layout(
-                height=260,
+                height=380,
                 margin=dict(t=40, b=10, l=30, r=30),
                 paper_bgcolor="rgba(0,0,0,0)",
                 plot_bgcolor="rgba(0,0,0,0)",
@@ -318,86 +363,109 @@ with tab_inspect:
             )
             return fig
 
-        col_gauge, col_metrics = st.columns([1, 1])
+        st.plotly_chart(risk_gauge(score), use_container_width=True)
 
-        with col_gauge:
-            st.plotly_chart(risk_gauge(score), use_container_width=True)
+        # ── Row 3: 4-Metric Grid ──────────────────────────────────────────────
+        st.divider()
+        st.caption("INSPECTION RESULTS")
+        
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Risk Score", f"{result['risk_score']} / 100")
+        c2.metric("Defect Type", result["defect_type"].replace("_", " ").title())
+        
+        with c3:
+            st.metric("Latency", f"{result['latency_ms']} ms")
+            lat = result['latency_ms']
+            if lat < 200:
+                st.success(f"⚡ {lat} ms")
+            elif lat <= 400:
+                st.warning(f"⚡ {lat} ms")
+            else:
+                st.error(f"⚡ {lat} ms")
+                
+        c4.metric("Anomaly Score", f"{result['anomaly_score']:.3f}")
 
-        with col_metrics:
-            st.markdown("<div class='section-title'>Inspection Results</div>",
-                        unsafe_allow_html=True)
-            m1, m2 = st.columns(2)
-            m1.metric("Risk Score",     f"{result['risk_score']} / 100")
-            m2.metric("Anomaly Score",  f"{result['anomaly_score']:.3f}")
-            m3, m4 = st.columns(2)
-            defect_display = result["defect_type"].replace("_", " ").title()
-            m3.metric("Defect Type",    defect_display)
-            m4.metric("Latency",        f"{result['latency_ms']} ms")
+        # ── Row 4: Thermal Grid ───────────────────────────────────────────────
+        st.divider()
+        st.caption("THERMAL FEATURES")
+        t1, t2, t3 = st.columns(3)
+        t1.metric("Peak",  f"{result['thermal']['peak']:.3f}")
+        t2.metric("Mean",  f"{result['thermal']['mean']:.3f}")
+        t3.metric("Std",   f"{result['thermal']['std']:.3f}",
+                   delta="⚠ uneven" if result["thermal"]["std"] > 0.20 else "✓ even",
+                   delta_color="inverse")
 
-            st.markdown("<div class='section-title'>Thermal Features</div>",
-                        unsafe_allow_html=True)
-            t1, t2, t3 = st.columns(3)
-            t1.metric("Peak",  f"{result['thermal']['peak']:.3f}")
-            t2.metric("Mean",  f"{result['thermal']['mean']:.3f}")
-            t3.metric("Std",   f"{result['thermal']['std']:.3f}",
-                       delta="⚠ uneven" if result["thermal"]["std"] > 0.20 else "✓ even",
-                       delta_color="inverse")
-
-            # Defect probability breakdown
-            st.markdown("<div class='section-title'>Defect Probabilities</div>",
-                        unsafe_allow_html=True)
-            proba_df = (
-                pd.Series(result["defect_proba"])
-                .sort_values(ascending=False)
-                .head(4)
-                .reset_index()
-            )
-            proba_df.columns = ["Defect", "Probability"]
-            proba_df["Defect"] = proba_df["Defect"].str.replace("_", " ").str.title()
-            fig_proba = px.bar(
-                proba_df, x="Probability", y="Defect", orientation="h",
-                color="Probability",
-                color_continuous_scale=["#22c55e", "#f59e0b", "#ef4444"],
-                range_x=[0, 1],
-            )
-            fig_proba.update_layout(
-                height=180,
-                margin=dict(t=0, b=0, l=0, r=0),
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-                coloraxis_showscale=False,
-                yaxis=dict(tickfont=dict(color="#a0b0d0", size=11)),
-                xaxis=dict(tickfont=dict(color="#7080a0", size=10),
-                           gridcolor="rgba(255,255,255,0.05)"),
-                font={"family": "Inter", "color": "#a0b0d0"},
-            )
-            st.plotly_chart(fig_proba, use_container_width=True)
+        # ── Row 5: Defect Probabilities ───────────────────────────────────────
+        st.divider()
+        st.caption("DEFECT PROBABILITIES")
+        proba_df = (
+            pd.Series(result["defect_proba"])
+            .sort_values(ascending=False)
+            .head(4)
+            .reset_index()
+        )
+        proba_df.columns = ["Defect", "Probability"]
+        proba_df["Defect"] = proba_df["Defect"].str.replace("_", " ").str.title()
+        fig_proba = px.bar(
+            proba_df, x="Probability", y="Defect", orientation="h",
+            color="Probability",
+            color_continuous_scale=["#16A34A", "#D97706", "#DC2626"],
+            range_x=[0, 1],
+        )
+        fig_proba.update_layout(
+            height=180,
+            margin=dict(t=0, b=0, l=0, r=0),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            coloraxis_showscale=False,
+            yaxis=dict(tickfont=dict(color="#000000", size=11)),
+            xaxis=dict(tickfont=dict(color="#000000", size=10),
+                       gridcolor="#E2E8F0"),
+            font={"family": "Inter", "color": "#000000"},
+        )
+        st.plotly_chart(fig_proba, use_container_width=True)
 
         # ── Step 14: Sensor Outputs ───────────────────────────────────────────
         st.divider()
-        st.markdown("<div class='section-title'>Sensor Outputs</div>",
-                    unsafe_allow_html=True)
+        st.caption("SENSOR OUTPUTS")
+
+        if decision == "PASS":
+            st.success(f"✅ PASS — Cell {result['cell_id']} — Low Risk")
+        elif decision == "MONITOR":
+            st.warning(f"⚠️ MONITOR — Cell {result['cell_id']} — Moderate Risk")
+        else:
+            st.error(f"❌ REJECT — Cell {result['cell_id']} — High Warranty Risk")
+        st.markdown("<br>", unsafe_allow_html=True)
 
         c1, c2, c3 = st.columns(3)
 
         with c1:
             st.markdown("**📷 Camera (Visual)**")
-            st.image(image_file,
-                     caption=f"Weld image — {sim_defect.replace('_',' ').title()}",
-                     use_container_width=True)
+            st.image(image_file, use_container_width=True)
+            
+            def_type = sim_defect.replace('_',' ').title()
+            if sim_defect == "good_weld":
+                def_color = "#16A34A"
+            elif sim_defect in ["spatter", "contamination"]:
+                def_color = "#D97706"
+            else:
+                def_color = "#DC2626"
+            
+            st.markdown(f"<div style='font-size:0.85rem; color:#000000; margin-top:0.5rem;'>Weld image — <span style='color:{def_color}'><b>{def_type}</b></span></div>", unsafe_allow_html=True)
 
         with c2:
             st.markdown("**🌡 IR Sensor (Thermal)**")
             st.image(thermal_file,
                      caption=f"Heat map  std={result['thermal']['std']:.3f}",
                      use_container_width=True)
+            st.caption("IR thermal map — heat distribution used by root cause classifier (Layer 3)")
 
         with c3:
             st.markdown("**🎤 Microphone (Acoustic)**")
             spec_file = audio_file.replace(".wav", ".png")
             if os.path.exists(spec_file):
-                st.image(spec_file, caption="Mel spectrogram",
-                         use_container_width=True)
+                st.image(spec_file, use_container_width=True)
+                st.caption("Mel spectrogram — frequency pattern used by anomaly detection model (Layer 2)")
             else:
                 st.warning("Spectrogram PNG not found.")
             st.audio(audio_file)
@@ -442,8 +510,8 @@ with tab_history:
         st.info("No inspections yet — run your first inspection in the Inspect Cell tab.")
     else:
         # ── Summary metrics ───────────────────────────────────────────────────
-        st.markdown("<div class='section-title'>Summary</div>",
-                    unsafe_allow_html=True)
+        st.divider()
+        st.caption("SUMMARY")
         s = get_summary()
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Total Inspected",  s["total"])
@@ -454,63 +522,63 @@ with tab_history:
         c4.metric("Avg Latency",      f"{s['avg_latency_ms']:.0f} ms")
 
         # ── Risk trend sparkline ──────────────────────────────────────────────
-        st.markdown("<div class='section-title'>Risk Score Over Time</div>",
-                    unsafe_allow_html=True)
+        st.divider()
+        st.caption("RISK SCORE OVER TIME")
         df_chart = df.sort_values("id")[["id", "risk_score", "decision"]].copy()
         df_chart["colour"] = df_chart["decision"].map(
-            {"PASS": "#22c55e", "REJECT": "#ef4444"}
+            {"PASS": "#16A34A", "MONITOR": "#D97706", "REJECT": "#DC2626"}
         )
         fig_trend = go.Figure()
         fig_trend.add_trace(go.Scatter(
             x=df_chart["id"],
             y=df_chart["risk_score"],
             mode="lines+markers",
-            line=dict(color="#60a5fa", width=2),
+            line=dict(color="#1A56DB", width=2),
             marker=dict(
                 color=df_chart["colour"],
                 size=8,
-                line=dict(color="#1e293b", width=1),
+                line=dict(color="#FFFFFF", width=1),
             ),
             name="Risk Score",
         ))
-        fig_trend.add_hline(y=65, line_dash="dash", line_color="#ef4444",
-                            annotation_text="Reject threshold (65)",
-                            annotation_font_color="#ef4444")
+        fig_trend.add_hline(y=70, line_dash="dash", line_color="#DC2626",
+                            annotation_text="Reject threshold (70)",
+                            annotation_font_color="#DC2626")
         fig_trend.update_layout(
             height=220,
             margin=dict(t=10, b=30, l=40, r=20),
             paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(255,255,255,0.02)",
-            xaxis=dict(title="Inspection #", gridcolor="rgba(255,255,255,0.04)",
-                       tickfont=dict(color="#7080a0")),
+            plot_bgcolor="rgba(0,0,0,0)",
+            xaxis=dict(title="Inspection #", gridcolor="#E2E8F0",
+                       tickfont=dict(color="#000000")),
             yaxis=dict(title="Risk Score", range=[0, 105],
-                       gridcolor="rgba(255,255,255,0.04)",
-                       tickfont=dict(color="#7080a0")),
-            font={"family": "Inter", "color": "#a0b0d0"},
+                       gridcolor="#E2E8F0",
+                       tickfont=dict(color="#000000")),
+            font={"family": "Inter", "color": "#000000"},
         )
         st.plotly_chart(fig_trend, use_container_width=True)
 
         # ── Styled table ──────────────────────────────────────────────────────
-        st.markdown("<div class='section-title'>All Records</div>",
-                    unsafe_allow_html=True)
+        st.divider()
+        st.caption("ALL RECORDS")
 
-        display_cols = ["id", "cell_id", "timestamp", "defect_type",
-                        "risk_score", "decision", "latency_ms"]
+        display_cols = ["cell_id", "defect_type", "risk_score", "decision", "latency_ms", "timestamp"]
         df_display = df[display_cols].copy()
         df_display["defect_type"] = (
             df_display["defect_type"].str.replace("_", " ").str.title()
         )
-        df_display.columns = ["#", "Cell ID", "Timestamp", "Defect",
-                               "Risk", "Decision", "Latency (ms)"]
+        df_display.columns = ["Cell ID", "Defect Type", "Risk Score", "Decision", "Latency (ms)", "Timestamp"]
 
-        def colour_row(row):
-            if row["Decision"] == "REJECT":
-                return ["background-color:rgba(239,68,68,0.10)"] * len(row)
-            return ["background-color:rgba(34,197,94,0.04)"] * len(row)
+        def colour_decision(val):
+            color = "#16A34A" if val == "PASS" else ("#D97706" if val == "MONITOR" else "#DC2626")
+            return f"color: {color}; font-weight: bold;"
 
-        styled = df_display.style.apply(colour_row, axis=1).format(
-            {"Risk": "{:.0f}"}
-        )
+        try:
+            styled = df_display.style.map(colour_decision, subset=["Decision"])
+        except AttributeError:
+            styled = df_display.style.applymap(colour_decision, subset=["Decision"])
+            
+        styled = styled.format({"Risk Score": "{:.0f}"})
         st.dataframe(styled, use_container_width=True, height=400)
 
         # ── Download button ───────────────────────────────────────────────────
@@ -538,29 +606,36 @@ with tab_analytics:
 
         # ── Defect distribution donut ─────────────────────────────────────────
         with col_l:
-            st.markdown("<div class='section-title'>Defect Type Distribution</div>",
-                        unsafe_allow_html=True)
+            st.divider()
+            st.caption("DEFECT TYPE DISTRIBUTION")
             defect_counts = df["defect_type"].value_counts()
+            color_map = {
+                "Good Weld": "#16A34A",
+                "Burn Through": "#DC2626",
+                "Lack Of Fusion": "#D97706",
+                "Contamination": "#7C3AED",
+                "Porosity": "#0284C7",
+                "Spatter": "#EA580C",
+                "Cold Weld": "#DB2777"
+            }
+            donut_labels = [x.replace("_", " ").title() for x in defect_counts.index]
             fig_donut = go.Figure(go.Pie(
-                labels=[x.replace("_", " ").title() for x in defect_counts.index],
+                labels=donut_labels,
                 values=defect_counts.values,
                 hole=0.55,
-                marker_colors=[
-                    "#60a5fa","#a78bfa","#f472b6",
-                    "#34d399","#fbbf24","#fb923c","#f87171","#94a3b8"
-                ],
-                textfont=dict(color="#e2e8f0"),
+                marker_colors=[color_map.get(lbl, "#94A3B8") for lbl in donut_labels],
+                textfont=dict(color="#000000"),
             ))
             fig_donut.update_layout(
                 height=280,
                 margin=dict(t=10, b=10, l=10, r=10),
                 paper_bgcolor="rgba(0,0,0,0)",
                 showlegend=True,
-                legend=dict(font=dict(color="#a0b0d0", size=11)),
+                legend=dict(font=dict(color="#000000", size=11)),
                 font={"family": "Inter"},
                 annotations=[dict(
                     text=f"<b>{len(df)}</b><br>cells",
-                    font=dict(size=18, color="#e2e8f0", family="Inter"),
+                    font=dict(size=18, color="#000000", family="Inter"),
                     showarrow=False,
                 )],
             )
@@ -568,89 +643,99 @@ with tab_analytics:
 
         # ── Risk score distribution histogram ─────────────────────────────────
         with col_r:
-            st.markdown("<div class='section-title'>Risk Score Distribution</div>",
-                        unsafe_allow_html=True)
+            st.divider()
+            st.caption("RISK SCORE DISTRIBUTION")
             fig_hist = go.Figure(go.Histogram(
                 x=df["risk_score"],
                 nbinsx=20,
-                marker_color="#60a5fa",
+                marker_color="#1A56DB",
                 opacity=0.8,
             ))
-            fig_hist.add_vline(x=65, line_dash="dash", line_color="#ef4444",
+            fig_hist.add_vline(x=70, line_dash="dash", line_color="#DC2626",
                                annotation_text="Threshold",
-                               annotation_font_color="#ef4444")
+                               annotation_font_color="#DC2626")
             fig_hist.update_layout(
                 height=280,
                 margin=dict(t=10, b=30, l=40, r=20),
                 paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(255,255,255,0.02)",
-                xaxis=dict(title="Risk Score", gridcolor="rgba(255,255,255,0.04)",
-                           tickfont=dict(color="#7080a0")),
-                yaxis=dict(title="Count",     gridcolor="rgba(255,255,255,0.04)",
-                           tickfont=dict(color="#7080a0")),
-                font={"family": "Inter", "color": "#a0b0d0"},
+                plot_bgcolor="rgba(0,0,0,0)",
+                xaxis=dict(title="Risk Score", gridcolor="#E2E8F0",
+                           tickfont=dict(color="#000000")),
+                yaxis=dict(title="Count",     gridcolor="#E2E8F0",
+                           tickfont=dict(color="#000000")),
+                font={"family": "Inter", "color": "#000000"},
             )
             st.plotly_chart(fig_hist, use_container_width=True)
+            st.caption(f"Based on n={len(df)} simulated inspection runs · threshold line at score 70")
 
         # ── Risk by defect type (box plot) ────────────────────────────────────
-        st.markdown("<div class='section-title'>Risk Score by Defect Type</div>",
-                    unsafe_allow_html=True)
+        st.divider()
+        st.caption("RISK SCORE BY DEFECT TYPE")
         df_plot = df.copy()
         df_plot["defect_label"] = (
             df_plot["defect_type"].str.replace("_", " ").str.title()
         )
+        color_map = {
+            "Good Weld": "#16A34A",
+            "Burn Through": "#DC2626",
+            "Lack Of Fusion": "#D97706",
+            "Contamination": "#7C3AED",
+            "Porosity": "#0284C7",
+            "Spatter": "#EA580C",
+            "Cold Weld": "#DB2777"
+        }
         fig_box = px.box(
             df_plot, x="defect_label", y="risk_score",
-            color="decision",
-            color_discrete_map={"PASS": "#22c55e", "REJECT": "#ef4444"},
+            color="defect_label",
+            color_discrete_map=color_map,
             labels={"defect_label": "Defect Type", "risk_score": "Risk Score"},
         )
-        fig_box.add_hline(y=65, line_dash="dash", line_color="#ef4444")
+        fig_box.add_hline(y=70, line_dash="dash", line_color="#DC2626")
         fig_box.update_layout(
             height=320,
             margin=dict(t=10, b=40, l=40, r=20),
             paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(255,255,255,0.02)",
-            xaxis=dict(tickfont=dict(color="#a0b0d0"), gridcolor="rgba(255,255,255,0.04)"),
-            yaxis=dict(tickfont=dict(color="#7080a0"), gridcolor="rgba(255,255,255,0.04)"),
-            legend=dict(font=dict(color="#a0b0d0")),
-            font={"family": "Inter", "color": "#a0b0d0"},
+            plot_bgcolor="rgba(0,0,0,0)",
+            xaxis=dict(tickfont=dict(color="#000000"), gridcolor="#E2E8F0"),
+            yaxis=dict(tickfont=dict(color="#000000"), gridcolor="#E2E8F0"),
+            legend=dict(font=dict(color="#000000")),
+            font={"family": "Inter", "color": "#000000"},
         )
         st.plotly_chart(fig_box, use_container_width=True)
 
         # ── Thermal std vs risk scatter ───────────────────────────────────────
-        st.markdown("<div class='section-title'>Thermal Uniformity vs Risk Score</div>",
-                    unsafe_allow_html=True)
+        st.divider()
+        st.caption("THERMAL UNIFORMITY VS RISK SCORE")
         df_th = df.dropna(subset=["thermal_std", "risk_score"])
         if not df_th.empty:
             fig_scatter = px.scatter(
                 df_th,
                 x="thermal_std", y="risk_score",
                 color="decision",
-                color_discrete_map={"PASS": "#22c55e", "REJECT": "#ef4444"},
+                color_discrete_map={"PASS": "#16A34A", "MONITOR": "#D97706", "REJECT": "#DC2626"},
                 hover_data=["cell_id", "defect_type"],
                 labels={"thermal_std": "Thermal Std Dev (unevenness)",
                         "risk_score":  "Risk Score"},
                 trendline="ols",
             )
-            fig_scatter.add_hline(y=65, line_dash="dash", line_color="#ef4444")
+            fig_scatter.add_hline(y=70, line_dash="dash", line_color="#DC2626")
             fig_scatter.update_layout(
                 height=300,
                 margin=dict(t=10, b=40, l=40, r=20),
                 paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(255,255,255,0.02)",
-                xaxis=dict(tickfont=dict(color="#7080a0"),
-                           gridcolor="rgba(255,255,255,0.04)"),
-                yaxis=dict(tickfont=dict(color="#7080a0"),
-                           gridcolor="rgba(255,255,255,0.04)"),
-                legend=dict(font=dict(color="#a0b0d0")),
-                font={"family": "Inter", "color": "#a0b0d0"},
+                plot_bgcolor="rgba(0,0,0,0)",
+                xaxis=dict(tickfont=dict(color="#000000"),
+                           gridcolor="#E2E8F0"),
+                yaxis=dict(tickfont=dict(color="#000000"),
+                           gridcolor="#E2E8F0"),
+                legend=dict(font=dict(color="#000000")),
+                font={"family": "Inter", "color": "#000000"},
             )
             st.plotly_chart(fig_scatter, use_container_width=True)
 
         # ── Key insights table ────────────────────────────────────────────────
-        st.markdown("<div class='section-title'>Key Insights</div>",
-                    unsafe_allow_html=True)
+        st.divider()
+        st.caption("KEY INSIGHTS")
         insights = []
         for defect, cnt in s["defect_counts"].items():
             sub = df[df["defect_type"] == defect]

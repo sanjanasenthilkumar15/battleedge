@@ -1,7 +1,7 @@
 """
 generate_synthetic.py
 =====================
-Generates ALL synthetic data needed for the BattleEdge digital simulation:
+Generates ALL synthetic data needed for the WeldSense digital simulation:
   • data/images/  — synthetic weld images (5 per defect class × 6 classes = 30)
   • data/thermal/ — synthetic thermal heatmaps (10 per class × 4 classes = 40)
   • data/audio/   — synthetic WAV files (50 normal + 50 anomaly = 100)
@@ -311,7 +311,7 @@ def generate_welding_csv(n_per_class=80):
 # ─────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     print("=" * 60)
-    print("  BattleEdge — Synthetic Data Generator")
+    print("  WeldSense — Synthetic Data Generator")
     print("=" * 60)
 
     # generate_weld_images(n_per_class=5)
